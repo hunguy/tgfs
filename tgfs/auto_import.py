@@ -129,7 +129,7 @@ class AutoImportManager:
         return result
 
     async def _fetch_latest_messages(
-        self, client, channel_id: int, last_processed: int
+        self, client_name: str, client, channel_id: int, last_processed: int
     ) -> List[MessageResp]:
         tdlib = client.message_api.tdlib
 
@@ -156,7 +156,7 @@ class AutoImportManager:
         logger.debug(f"[auto-import] Fetching latest messages for {client_name}")
 
         last_processed = self._last_message_ids.get(client_name, 0)
-        latest_messages = await self._fetch_latest_messages(client, channel_id, last_processed)
+        latest_messages = await self._fetch_latest_messages(client_name, client, channel_id, last_processed)
         if not latest_messages:
             logger.debug(f"[auto-import] No messages found for {client_name}")
             return
