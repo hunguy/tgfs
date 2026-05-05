@@ -24,6 +24,7 @@ class AutoImportManager:
         self._tasks: list = []
         self._running = False
         self._last_message_ids: Dict[str, int] = {}
+        self._file_names: Dict[str, Dict[int, str]] = {}
 
     def _resolve_channel_id(self, client_name: str) -> Optional[int]:
         for cid, meta in self._config.tgfs.metadata.items():
@@ -50,8 +51,7 @@ class AutoImportManager:
 
         logger.info(f"[auto-import] Polling stopped for {client_name}")
 
-    @staticmethod
-    def _message_resp_from_telethon(m) -> Optional[MessageResp]:
+    def _message_resp_from_telethon(self, client_name: str, m) -> Optional[MessageResp]:
         if not m:
             return None
         from telethon import types as tlt
@@ -73,10 +73,14 @@ class AutoImportManager:
                 file_reference=doc.file_reference,
                 mime_type=doc.mime_type,
             )
+            for attr in doc.attributes:
+                if hasattr(attr, 'file_name'):
+                    self._file_names.setdefault(client_name, {})[m.id] = attr.file_name
+                    break
         return obj
 
     async def _fetch_latest_messages_with_account(
-        self, account_api: TelethonAPI, channel_id: int
+        self, client_name: str, account_api: TelethonAPI, channel_id: int
     ) -> List[MessageResp]:
         raw_messages = await account_api._client.get_messages(
             entity=PeerChannel(channel_id=channel_id),
@@ -86,7 +90,7 @@ class AutoImportManager:
             logger.warning(f"[auto-import] Unexpected response type: {type(raw_messages)}")
             return []
 
-        return [m for m in (self._message_resp_from_telethon(m) for m in raw_messages) if m]
+        return [m for m in (self._message_resp_from_telethon(client_name, m) for m in raw_messages) if m]
 
     async def _fetch_latest_messages_with_bot(
         self, bot_api: TelethonAPI, channel_id: int, last_processed: int
@@ -131,7 +135,7 @@ class AutoImportManager:
 
         if tdlib.account and isinstance(tdlib.account, TelethonAPI):
             logger.debug(f"[auto-import] Using account client to fetch messages for channel {channel_id}")
-            return await self._fetch_latest_messages_with_account(tdlib.account, channel_id)
+            return await self._fetch_latest_messages_with_account(client_name, tdlib.account, channel_id)
 
         bot = tdlib.next_bot
         if not isinstance(bot, TelethonAPI):
@@ -183,6 +187,9 @@ class AutoImportManager:
             if message.text and message.text.startswith(METADATA_PREFIX):
                 logger.debug(f"[auto-import] Skipping metadata message {message.message_id}")
                 continue
+            if message.document.mime_type == "text/plain":
+                logger.debug(f"[auto-import] Skipping text document {message.message_id}")
+                continue
 
             await self._import_message(client_name, client, message)
             self._last_message_ids[client_name] = message.message_id
@@ -191,9 +198,10 @@ class AutoImportManager:
         if imported_count:
             logger.info(f"[auto-import] Imported {imported_count} messages for {client_name}")
 
-    def _extract_file_name(self, message: MessageRespWithDocument) -> str:
-        if message.text and message.text.strip():
-            return message.text.strip()
+    def _extract_file_name(self, client_name: str, message: MessageRespWithDocument) -> str:
+        file_name = self._file_names.get(client_name, {}).get(message.message_id)
+        if file_name:
+            return file_name
         return f"imported_{message.message_id}"
 
     async def _import_message(
@@ -201,7 +209,7 @@ class AutoImportManager:
     ) -> None:
         ops = Ops(client)
 
-        file_name = self._extract_file_name(message)
+        file_name = self._extract_file_name(client_name, message)
         file_name = file_name.replace('/', '_').replace('\\', '_')
         target_path = f"/{file_name}"
 
