@@ -1,0 +1,12 @@
+version: "3.8"
+services:
+  tgfs:
+    image: wheatcarrier/tgfs:latest
+    restart: always
+    ports:
+      - 1900
+    volumes:
+      - /opt/tgfs-data:/home/tgfs/.tgfs
+    environment:
+      - TGFS_DATA_DIR=/home/tgfs/.tgfs
+      - TGFS_CONFIG_FILE=config.yaml

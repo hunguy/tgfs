@@ -6,3 +6,6 @@ CLAUDE.md
 dist/
 coverage.xml
 .coverage
+account.session
+bot.session/
+.DS_Store
