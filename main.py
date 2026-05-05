@@ -16,6 +16,7 @@ from uvicorn.config import Config as UvicornConfig
 from uvicorn.server import Server
 
 from tgfs.app import create_app
+from tgfs.auto_import import AutoImportManager
 from tgfs.config import Config, get_config
 from tgfs.core import Client, Clients
 from tgfs.telegram import PyrogramAPI, TDLibApi, TelethonAPI, pyrogram, telethon
@@ -79,8 +80,15 @@ async def main():
 
     clients = await create_clients(config)
 
+    auto_import = AutoImportManager(clients, config)
+    auto_import.start()
+
     app = create_app(clients, config)
-    await run_server(app, config.tgfs.server.host, config.tgfs.server.port, "TGFS")
+
+    try:
+        await run_server(app, config.tgfs.server.host, config.tgfs.server.port, "TGFS")
+    finally:
+        await auto_import.stop()
 
 
 if __name__ == "__main__":
