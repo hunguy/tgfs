@@ -21,6 +21,10 @@ class TestAutoImportManager:
         client.message_api = Mock()
         client.message_api.tdlib = Mock()
 
+        account_api = Mock(spec="tgfs.telegram.impl.telethon.TelethonAPI")
+        account_api._client = Mock()
+        client.message_api.tdlib.account = account_api
+
         bot_api = Mock(spec="tgfs.telegram.impl.telethon.TelethonAPI")
         bot_api._client = Mock()
         client.message_api.tdlib.next_bot = bot_api
@@ -58,14 +62,39 @@ class TestAutoImportManager:
         await manager.stop()
         assert manager._running is False
 
-    async def test_fetch_latest_messages_returns_empty_for_non_telethon(self, manager, mock_clients):
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot = Mock()
-        result = await manager._fetch_latest_messages(mock_clients["TGFS-Channel"], 3948205614)
-        assert result == []
+    async def test_fetch_latest_messages_uses_account(self, manager, mock_clients):
+        from telethon.helpers import TotalList
+
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([Mock(id=10, message="hello", media=None)])
+        )
+
+        result = await manager._fetch_latest_messages(
+            mock_clients["TGFS-Channel"], 3948205614, 0
+        )
+        assert len(result) == 1
+        assert result[0].message_id == 10
+
+    async def test_fetch_latest_messages_falls_back_to_bot(self, manager, mock_clients):
+        mock_clients["TGFS-Channel"].message_api.tdlib.account = None
+
+        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot.get_messages = AsyncMock(
+            return_value=[
+                Mock(message_id=10, document=None, text="hello"),
+            ]
+        )
+
+        result = await manager._fetch_latest_messages(
+            mock_clients["TGFS-Channel"], 3948205614, 0
+        )
+        assert len(result) == 1
+        assert result[0].message_id == 10
 
     async def test_process_new_messages_skips_no_document(self, manager, mock_clients):
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[Mock(id=10, message="hello", media=None)]
+        from telethon.helpers import TotalList
+
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([Mock(id=10, message="hello", media=None)])
         )
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
@@ -73,13 +102,14 @@ class TestAutoImportManager:
         assert manager._last_message_ids.get("TGFS-Channel") != 10
 
     async def test_process_new_messages_skips_pinned(self, manager, mock_clients):
+        from telethon.helpers import TotalList
         from telethon.tl import types as tlt
 
         mock_clients["TGFS-Channel"].message_api.get_pinned_message = AsyncMock(
             return_value=Mock(message_id=10)
         )
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([
                 Mock(
                     id=10,
                     message="hello",
@@ -91,7 +121,7 @@ class TestAutoImportManager:
                         )
                     ),
                 ),
-            ]
+            ])
         )
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
@@ -99,13 +129,14 @@ class TestAutoImportManager:
         assert manager._last_message_ids.get("TGFS-Channel") != 10
 
     async def test_process_new_messages_skips_metadata(self, manager, mock_clients):
+        from telethon.helpers import TotalList
         from telethon.tl import types as tlt
 
         mock_clients["TGFS-Channel"].message_api.get_pinned_message = AsyncMock(
             side_effect=Exception("no pinned")
         )
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([
                 Mock(
                     id=10,
                     message=METADATA_PREFIX + "rest",
@@ -117,7 +148,7 @@ class TestAutoImportManager:
                         )
                     ),
                 ),
-            ]
+            ])
         )
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
@@ -129,13 +160,14 @@ class TestAutoImportManager:
     async def test_process_new_messages_imports_successfully(
         self, mock_gfc, mock_ops_class, manager, mock_clients
     ):
+        from telethon.helpers import TotalList
         from telethon.tl import types as tlt
 
         mock_clients["TGFS-Channel"].message_api.get_pinned_message = AsyncMock(
             side_effect=Exception("no pinned")
         )
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([
                 Mock(
                     id=10,
                     message="myfile.txt",
@@ -147,7 +179,7 @@ class TestAutoImportManager:
                         )
                     ),
                 ),
-            ]
+            ])
         )
 
         mock_ops = Mock()
@@ -164,13 +196,14 @@ class TestAutoImportManager:
     async def test_process_new_messages_logs_error(
         self, mock_gfc, mock_ops_class, manager, mock_clients
     ):
+        from telethon.helpers import TotalList
         from telethon.tl import types as tlt
 
         mock_clients["TGFS-Channel"].message_api.get_pinned_message = AsyncMock(
             side_effect=Exception("no pinned")
         )
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([
                 Mock(
                     id=10,
                     message="myfile.txt",
@@ -182,7 +215,7 @@ class TestAutoImportManager:
                         )
                     ),
                 ),
-            ]
+            ])
         )
 
         mock_ops = Mock()
@@ -201,13 +234,14 @@ class TestAutoImportManager:
     async def test_process_new_messages_uses_fallback_filename(
         self, mock_gfc, mock_ops_class, manager, mock_clients
     ):
+        from telethon.helpers import TotalList
         from telethon.tl import types as tlt
 
         mock_clients["TGFS-Channel"].message_api.get_pinned_message = AsyncMock(
             side_effect=Exception("no pinned")
         )
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            return_value=[
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([
                 Mock(
                     id=99,
                     message=None,
@@ -219,7 +253,7 @@ class TestAutoImportManager:
                         )
                     ),
                 ),
-            ]
+            ])
         )
 
         mock_ops = Mock()
@@ -237,8 +271,10 @@ class TestAutoImportManager:
         await manager._poll_channel("TGFS-Channel")
 
     async def test_poll_channel_handles_errors(self, manager, mock_clients):
-        mock_clients["TGFS-Channel"].message_api.tdlib.next_bot._client.get_messages = AsyncMock(
-            side_effect=Exception("network error")
+        from telethon.helpers import TotalList
+
+        mock_clients["TGFS-Channel"].message_api.tdlib.account._client.get_messages = AsyncMock(
+            return_value=TotalList([])
         )
 
         manager._running = True

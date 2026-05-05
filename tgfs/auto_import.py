@@ -50,15 +50,35 @@ class AutoImportManager:
 
         logger.info(f"[auto-import] Polling stopped for {client_name}")
 
-    async def _fetch_latest_messages(self, client, channel_id: int) -> List[MessageResp]:
-        tdlib = client.message_api.tdlib
-        bot = tdlib.next_bot
+    @staticmethod
+    def _message_resp_from_telethon(m) -> Optional[MessageResp]:
+        if not m:
+            return None
+        from telethon import types as tlt
 
-        if not isinstance(bot, TelethonAPI):
-            logger.warning(f"[auto-import] Auto-import only supports Telethon. Got {type(bot).__name__}")
-            return []
+        obj = MessageResp(
+            message_id=m.id,
+            text=m.message or "",
+            document=None,
+        )
+        if (
+            isinstance(m.media, tlt.MessageMediaDocument)
+            and (doc := m.media.document)
+            and not isinstance(doc, tlt.DocumentEmpty)
+        ):
+            obj.document = Document(
+                size=doc.size,
+                id=doc.id,
+                access_hash=doc.access_hash,
+                file_reference=doc.file_reference,
+                mime_type=doc.mime_type,
+            )
+        return obj
 
-        raw_messages = await bot._client.get_messages(
+    async def _fetch_latest_messages_with_account(
+        self, account_api: TelethonAPI, channel_id: int
+    ) -> List[MessageResp]:
+        raw_messages = await account_api._client.get_messages(
             entity=PeerChannel(channel_id=channel_id),
             limit=MESSAGES_PER_POLL,
         )
@@ -66,46 +86,79 @@ class AutoImportManager:
             logger.warning(f"[auto-import] Unexpected response type: {type(raw_messages)}")
             return []
 
-        from telethon import types as tlt
+        return [m for m in (self._message_resp_from_telethon(m) for m in raw_messages) if m]
 
+    async def _fetch_latest_messages_with_bot(
+        self, bot_api: TelethonAPI, channel_id: int, last_processed: int
+    ) -> List[MessageResp]:
         result: List[MessageResp] = []
-        for m in raw_messages:
-            if not m:
-                continue
-            obj = MessageResp(
-                message_id=m.id,
-                text=m.message or "",
-                document=None,
-            )
-            if (
-                isinstance(m.media, tlt.MessageMediaDocument)
-                and (doc := m.media.document)
-                and not isinstance(doc, tlt.DocumentEmpty)
-            ):
-                obj.document = Document(
-                    size=doc.size,
-                    id=doc.id,
-                    access_hash=doc.access_hash,
-                    file_reference=doc.file_reference,
-                    mime_type=doc.mime_type,
+        current_id = last_processed + 1
+        consecutive_missing = 0
+        max_consecutive_missing = 20
+        batch_size = 20
+
+        while consecutive_missing < max_consecutive_missing:
+            batch_ids = list(range(current_id, current_id + batch_size))
+            from tgfs.reqres import GetMessagesReq
+
+            batch = await bot_api.get_messages(
+                GetMessagesReq(
+                    chat=channel_id,
+                    message_ids=tuple(batch_ids),
                 )
-            result.append(obj)
+            )
+
+            found_in_batch = False
+            for msg in batch:
+                if msg is not None:
+                    found_in_batch = True
+                    consecutive_missing = 0
+                    result.append(msg)
+                else:
+                    consecutive_missing += 1
+
+            if not found_in_batch:
+                break
+
+            current_id += batch_size
 
         return result
+
+    async def _fetch_latest_messages(
+        self, client, channel_id: int, last_processed: int
+    ) -> List[MessageResp]:
+        tdlib = client.message_api.tdlib
+
+        if tdlib.account and isinstance(tdlib.account, TelethonAPI):
+            logger.debug(f"[auto-import] Using account client to fetch messages for channel {channel_id}")
+            return await self._fetch_latest_messages_with_account(tdlib.account, channel_id)
+
+        bot = tdlib.next_bot
+        if not isinstance(bot, TelethonAPI):
+            logger.warning(
+                f"[auto-import] Auto-import only supports Telethon. Got {type(bot).__name__}"
+            )
+            return []
+
+        logger.debug(
+            f"[auto-import] Using bot client to scan message IDs for channel {channel_id} "
+            f"(starting from {last_processed + 1})"
+        )
+        return await self._fetch_latest_messages_with_bot(bot, channel_id, last_processed)
 
     async def _process_new_messages(
         self, client_name: str, client, channel_id: int
     ) -> None:
         logger.debug(f"[auto-import] Fetching latest messages for {client_name}")
 
-        latest_messages = await self._fetch_latest_messages(client, channel_id)
+        last_processed = self._last_message_ids.get(client_name, 0)
+        latest_messages = await self._fetch_latest_messages(client, channel_id, last_processed)
         if not latest_messages:
             logger.debug(f"[auto-import] No messages found for {client_name}")
             return
 
         logger.debug(f"[auto-import] Fetched {len(latest_messages)} messages for {client_name}")
 
-        last_processed = self._last_message_ids.get(client_name, 0)
         new_messages = [m for m in latest_messages if m.message_id > last_processed]
 
         if not new_messages:
