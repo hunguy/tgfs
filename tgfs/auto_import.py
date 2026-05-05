@@ -203,7 +203,7 @@ class AutoImportManager:
 
         file_name = self._extract_file_name(message)
         file_name = file_name.replace('/', '_').replace('\\', '_')
-        target_path = f"/{client_name}/{file_name}"
+        target_path = f"/{file_name}"
 
         logger.info(
             f"[auto-import] Importing message {message.message_id} "
@@ -211,7 +211,7 @@ class AutoImportManager:
         )
 
         from tgfs.app.fs_cache import gfc
-        gfc[client_name].reset(f"/{file_name}")
+        gfc[client_name].reset(target_path)
 
         try:
             await ops.import_from_existing_file_message(

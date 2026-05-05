@@ -263,7 +263,7 @@ class TestAutoImportManager:
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
 
         call_args = mock_ops.import_from_existing_file_message.call_args
-        assert "imported_99" in str(call_args)
+        assert "/imported_99" in str(call_args)
         assert manager._last_message_ids.get("TGFS-Channel") == 99
 
     async def test_poll_channel_stops_when_not_running(self, manager):
