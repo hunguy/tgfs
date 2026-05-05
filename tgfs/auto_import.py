@@ -1,12 +1,14 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from tgfs.config import Config
 from tgfs.core import Clients
 from tgfs.core.ops import Ops
-from tgfs.reqres import Document, MessageRespWithDocument
-from tgfs.telegram.interface import TDLibApi
+from tgfs.reqres import Document, MessageResp, MessageRespWithDocument
+from tgfs.telegram.impl.telethon import TelethonAPI
+from telethon.tl.types import PeerChannel
+from telethon.helpers import TotalList
 
 logger = logging.getLogger(__name__)
 
@@ -32,43 +34,85 @@ class AutoImportManager:
     async def _poll_channel(self, client_name: str) -> None:
         channel_id = self._resolve_channel_id(client_name)
         if channel_id is None:
-            logger.error(f"Could not find channel ID for client {client_name}")
+            logger.error(f"[auto-import] Could not find channel ID for client {client_name}")
             return
 
         client = self._clients[client_name]
+        logger.info(f"[auto-import] Polling started for {client_name} (channel {channel_id})")
 
         while self._running:
             try:
                 await self._process_new_messages(client_name, client, channel_id)
             except Exception as ex:
-                logger.error(f"Error polling channel {client_name}: {ex}", exc_info=True)
+                logger.error(f"[auto-import] Error polling channel {client_name}: {ex}", exc_info=True)
 
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
+
+        logger.info(f"[auto-import] Polling stopped for {client_name}")
+
+    async def _fetch_latest_messages(self, client, channel_id: int) -> List[MessageResp]:
+        tdlib = client.message_api.tdlib
+        bot = tdlib.next_bot
+
+        if not isinstance(bot, TelethonAPI):
+            logger.warning(f"[auto-import] Auto-import only supports Telethon. Got {type(bot).__name__}")
+            return []
+
+        raw_messages = await bot._client.get_messages(
+            entity=PeerChannel(channel_id=channel_id),
+            limit=MESSAGES_PER_POLL,
+        )
+        if not isinstance(raw_messages, TotalList):
+            logger.warning(f"[auto-import] Unexpected response type: {type(raw_messages)}")
+            return []
+
+        from telethon import types as tlt
+
+        result: List[MessageResp] = []
+        for m in raw_messages:
+            if not m:
+                continue
+            obj = MessageResp(
+                message_id=m.id,
+                text=m.message or "",
+                document=None,
+            )
+            if (
+                isinstance(m.media, tlt.MessageMediaDocument)
+                and (doc := m.media.document)
+                and not isinstance(doc, tlt.DocumentEmpty)
+            ):
+                obj.document = Document(
+                    size=doc.size,
+                    id=doc.id,
+                    access_hash=doc.access_hash,
+                    file_reference=doc.file_reference,
+                    mime_type=doc.mime_type,
+                )
+            result.append(obj)
+
+        return result
 
     async def _process_new_messages(
         self, client_name: str, client, channel_id: int
     ) -> None:
-        tdlib: TDLibApi = client.message_api.tdlib
-        bot = tdlib.next_bot
+        logger.debug(f"[auto-import] Fetching latest messages for {client_name}")
 
-        from tgfs.reqres import GetMessagesReq
-
-        latest_messages = await bot.get_messages(
-            GetMessagesReq(
-                chat=channel_id,
-                message_ids=tuple(range(-MESSAGES_PER_POLL, 0)),
-            )
-        )
-
-        latest_messages = [m for m in latest_messages if m is not None]
+        latest_messages = await self._fetch_latest_messages(client, channel_id)
         if not latest_messages:
+            logger.debug(f"[auto-import] No messages found for {client_name}")
             return
+
+        logger.debug(f"[auto-import] Fetched {len(latest_messages)} messages for {client_name}")
 
         last_processed = self._last_message_ids.get(client_name, 0)
         new_messages = [m for m in latest_messages if m.message_id > last_processed]
 
         if not new_messages:
+            logger.debug(f"[auto-import] No new messages for {client_name} (last: {last_processed})")
             return
+
+        logger.info(f"[auto-import] Found {len(new_messages)} new messages for {client_name}")
 
         try:
             pinned = await client.message_api.get_pinned_message()
@@ -76,31 +120,40 @@ class AutoImportManager:
         except Exception:
             pinned_id = None
 
+        imported_count = 0
         for message in sorted(new_messages, key=lambda m: m.message_id):
             if not message.document:
                 continue
             if pinned_id and message.message_id == pinned_id:
+                logger.debug(f"[auto-import] Skipping pinned message {message.message_id}")
                 continue
             if message.text and message.text.startswith(METADATA_PREFIX):
+                logger.debug(f"[auto-import] Skipping metadata message {message.message_id}")
                 continue
 
             await self._import_message(client_name, client, message)
             self._last_message_ids[client_name] = message.message_id
+            imported_count += 1
+
+        if imported_count:
+            logger.info(f"[auto-import] Imported {imported_count} messages for {client_name}")
+
+    def _extract_file_name(self, message: MessageRespWithDocument) -> str:
+        if message.text and message.text.strip():
+            return message.text.strip()
+        return f"imported_{message.message_id}"
 
     async def _import_message(
         self, client_name: str, client, message: MessageRespWithDocument
     ) -> None:
         ops = Ops(client)
 
-        file_name = message.text.strip() if message.text else None
-        if not file_name:
-            file_name = f"imported_{message.message_id}"
-
+        file_name = self._extract_file_name(message)
         file_name = file_name.replace('/', '_').replace('\\', '_')
         target_path = f"/{client_name}/{file_name}"
 
         logger.info(
-            f"Auto-importing message {message.message_id} "
+            f"[auto-import] Importing message {message.message_id} "
             f"(size: {message.document.size}, name: {file_name})"
         )
 
@@ -122,31 +175,31 @@ class AutoImportManager:
                 ),
                 target_path,
             )
-            logger.info(
-                f"Successfully auto-imported message {message.message_id} as {file_name}"
-            )
+            logger.info(f"[auto-import] Successfully imported message {message.message_id} as {file_name}")
         except Exception as ex:
             logger.error(
-                f"Failed to auto-import message {message.message_id}: {ex}",
+                f"[auto-import] Failed to import message {message.message_id}: {ex}",
                 exc_info=True,
             )
 
     def start(self) -> None:
         if self._running:
-            logger.warning("AutoImportManager is already running")
+            logger.warning("[auto-import] Already running")
             return
 
         self._running = True
+        logger.info("[auto-import] Starting AutoImportManager")
 
         for client_name in self._clients:
             task = asyncio.create_task(self._poll_channel(client_name))
             self._tasks.append(task)
-            logger.info(f"Started auto-import polling for channel {client_name}")
+            logger.info(f"[auto-import] Created polling task for {client_name}")
 
     async def stop(self) -> None:
         if not self._running:
             return
 
+        logger.info("[auto-import] Stopping AutoImportManager")
         self._running = False
 
         for task in self._tasks:
@@ -157,4 +210,4 @@ class AutoImportManager:
                 pass
 
         self._tasks.clear()
-        logger.info("AutoImportManager stopped")
+        logger.info("[auto-import] AutoImportManager stopped")
