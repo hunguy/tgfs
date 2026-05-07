@@ -8,7 +8,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "poolside/laguna-m.1:free"
+DEFAULT_MODEL = "google/gemini-2.0-flash-lite-001"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
