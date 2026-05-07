@@ -179,7 +179,13 @@ class AutoImportManager:
 
         imported_count = 0
         for message in sorted(new_messages, key=lambda m: m.message_id):
+            # Always update last_processed so skipped messages don't get re-found every poll
+            self._last_message_ids[client_name] = message.message_id
+
             if not message.document:
+                logger.debug(
+                    f"[auto-import] Skipping message {message.message_id}: no document (media type not supported)"
+                )
                 continue
             if pinned_id and message.message_id == pinned_id:
                 logger.debug(f"[auto-import] Skipping pinned message {message.message_id}")
@@ -192,7 +198,6 @@ class AutoImportManager:
                 continue
 
             await self._import_message(client_name, client, message)
-            self._last_message_ids[client_name] = message.message_id
             imported_count += 1
 
         if imported_count:

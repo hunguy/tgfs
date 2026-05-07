@@ -99,7 +99,8 @@ class TestAutoImportManager:
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
 
-        assert manager._last_message_ids.get("TGFS-Channel") != 10
+        # Skipped messages should still update last_processed so they aren't re-found every poll
+        assert manager._last_message_ids.get("TGFS-Channel") == 10
 
     async def test_process_new_messages_skips_pinned(self, manager, mock_clients):
         from telethon.helpers import TotalList
@@ -116,7 +117,7 @@ class TestAutoImportManager:
                     media=tlt.MessageMediaDocument(
                         document=tlt.Document(
                             id=1, access_hash=2, file_reference=b"ref",
-                            date=None, mime_type="text/plain", size=1024,
+                            date=None, mime_type="application/pdf", size=1024,
                             dc_id=1, attributes=[],
                         )
                     ),
@@ -126,7 +127,8 @@ class TestAutoImportManager:
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
 
-        assert manager._last_message_ids.get("TGFS-Channel") != 10
+        # Pinned messages are skipped but still advance last_processed
+        assert manager._last_message_ids.get("TGFS-Channel") == 10
 
     async def test_process_new_messages_skips_metadata(self, manager, mock_clients):
         from telethon.helpers import TotalList
@@ -143,7 +145,7 @@ class TestAutoImportManager:
                     media=tlt.MessageMediaDocument(
                         document=tlt.Document(
                             id=1, access_hash=2, file_reference=b"ref",
-                            date=None, mime_type="text/plain", size=1024,
+                            date=None, mime_type="application/json", size=1024,
                             dc_id=1, attributes=[],
                         )
                     ),
@@ -153,7 +155,8 @@ class TestAutoImportManager:
 
         await manager._process_new_messages("TGFS-Channel", mock_clients["TGFS-Channel"], 3948205614)
 
-        assert manager._last_message_ids.get("TGFS-Channel") != 10
+        # Metadata messages are skipped but still advance last_processed
+        assert manager._last_message_ids.get("TGFS-Channel") == 10
 
     @patch("tgfs.auto_import.Ops")
     @patch("tgfs.auto_import.gfc")
@@ -174,7 +177,7 @@ class TestAutoImportManager:
                     media=tlt.MessageMediaDocument(
                         document=tlt.Document(
                             id=1, access_hash=2, file_reference=b"ref",
-                            date=None, mime_type="text/plain", size=1024,
+                            date=None, mime_type="application/octet-stream", size=1024,
                             dc_id=1, attributes=[],
                         )
                     ),
@@ -210,7 +213,7 @@ class TestAutoImportManager:
                     media=tlt.MessageMediaDocument(
                         document=tlt.Document(
                             id=1, access_hash=2, file_reference=b"ref",
-                            date=None, mime_type="text/plain", size=1024,
+                            date=None, mime_type="application/octet-stream", size=1024,
                             dc_id=1, attributes=[],
                         )
                     ),
@@ -248,7 +251,7 @@ class TestAutoImportManager:
                     media=tlt.MessageMediaDocument(
                         document=tlt.Document(
                             id=1, access_hash=2, file_reference=b"ref",
-                            date=None, mime_type="text/plain", size=1024,
+                            date=None, mime_type="application/octet-stream", size=1024,
                             dc_id=1, attributes=[],
                         )
                     ),
