@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
 import mimetypes
+import os
 from typing import Dict, List, Optional
 
-from tgfs.config import Config
+from tgfs.config import Config, DATA_DIR
 from tgfs.core import Clients
 from tgfs.core.ops import Ops
 from tgfs.reqres import Document, MessageResp, MessageRespWithDocument
@@ -17,6 +19,7 @@ logger = logging.getLogger(__name__)
 METADATA_PREFIX = '{"type":"F"'
 POLL_INTERVAL_SECONDS = 10
 MESSAGES_PER_POLL = 50
+_STATE_FILE = os.path.join(DATA_DIR, "auto_import_state.json")
 
 
 class AutoImportManager:
@@ -28,6 +31,25 @@ class AutoImportManager:
         self._last_message_ids: Dict[str, int] = {}
         self._file_names: Dict[str, Dict[int, str]] = {}
         self._filename_inference = FilenameInferenceService()
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if not os.path.exists(_STATE_FILE):
+            return
+        try:
+            with open(_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self._last_message_ids = data.get("last_message_ids", {})
+            logger.info(f"[auto-import] Loaded state: {self._last_message_ids}")
+        except Exception as ex:
+            logger.error(f"[auto-import] Failed to load state: {ex}")
+
+    def _save_state(self) -> None:
+        try:
+            with open(_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump({"last_message_ids": self._last_message_ids}, f)
+        except Exception as ex:
+            logger.error(f"[auto-import] Failed to save state: {ex}")
 
     def _resolve_channel_id(self, client_name: str) -> Optional[int]:
         for cid, meta in self._config.tgfs.metadata.items():
@@ -184,6 +206,7 @@ class AutoImportManager:
         for message in sorted(new_messages, key=lambda m: m.message_id):
             # Always update last_processed so skipped messages don't get re-found every poll
             self._last_message_ids[client_name] = message.message_id
+            self._save_state()
 
             if not message.document:
                 logger.debug(
@@ -295,5 +318,6 @@ class AutoImportManager:
                 pass
 
         self._tasks.clear()
+        self._save_state()
         await self._filename_inference.close()
         logger.info("[auto-import] AutoImportManager stopped")
