@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import re
@@ -60,52 +61,76 @@ class FilenameInferenceService:
         client = await self._get_client()
         prompt = self._build_prompt(text, mime_type)
 
-        try:
-            response = await client.post(
-                OPENROUTER_API_URL,
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self._model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 100,
-                    "temperature": 0.3,
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+        for attempt in range(1, 4):
+            try:
+                response = await client.post(
+                    OPENROUTER_API_URL,
+                    headers={
+                        "Authorization": f"Bearer {self._api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self._model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 100,
+                        "temperature": 0.3,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
 
-            if not data.get("choices"):
-                logger.warning("[filename-inference] OpenRouter returned no choices")
+                if not data.get("choices"):
+                    logger.warning("[filename-inference] OpenRouter returned no choices")
+                    if attempt < 3:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+
+                raw = (data["choices"][0].get("message", {}).get("content") or "").strip()
+                if not raw:
+                    finish_reason = data['choices'][0].get('finish_reason')
+                    logger.warning(
+                        f"[filename-inference] OpenRouter returned empty content (attempt {attempt}/3). "
+                        f"Model: {self._model}, finish_reason: {finish_reason}"
+                    )
+                    if attempt < 3:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+
+                raw = raw.removeprefix("```").removeprefix("`").removesuffix("```").removesuffix("`").strip()
+
+                sanitized = self._sanitize_filename(raw)
+                if not sanitized:
+                    logger.warning("[filename-inference] Sanitized filename is empty")
+                    if attempt < 3:
+                        await asyncio.sleep(1)
+                        continue
+                    return None
+
+                logger.info(f"[filename-inference] Inferred filename: {sanitized}")
+                return sanitized
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"[filename-inference] OpenRouter HTTP error {e.response.status_code}: {e.response.text}")
+                if attempt < 3:
+                    await asyncio.sleep(1)
+                    continue
+                return None
+            except httpx.RequestError as e:
+                logger.error(f"[filename-inference] OpenRouter request error: {e}")
+                if attempt < 3:
+                    await asyncio.sleep(1)
+                    continue
+                return None
+            except Exception as e:
+                logger.error(f"[filename-inference] Unexpected error: {e}", exc_info=True)
+                if attempt < 3:
+                    await asyncio.sleep(1)
+                    continue
                 return None
 
-            raw = (data["choices"][0].get("message", {}).get("content") or "").strip()
-            if not raw:
-                logger.warning("[filename-inference] OpenRouter returned empty content")
-                return None
-
-            # Sometimes LLMs wrap the filename in markdown code blocks
-            raw = raw.removeprefix("```").removeprefix("`").removesuffix("```").removesuffix("`").strip()
-
-            sanitized = self._sanitize_filename(raw)
-            if not sanitized:
-                logger.warning("[filename-inference] Sanitized filename is empty")
-                return None
-
-            logger.info(f"[filename-inference] Inferred filename: {sanitized}")
-            return sanitized
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"[filename-inference] OpenRouter HTTP error {e.response.status_code}: {e.response.text}")
-            return None
-        except httpx.RequestError as e:
-            logger.error(f"[filename-inference] OpenRouter request error: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"[filename-inference] Unexpected error: {e}", exc_info=True)
-            return None
+        return None
 
     async def close(self) -> None:
         if self._client is not None:
