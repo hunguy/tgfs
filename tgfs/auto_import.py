@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import mimetypes
 from typing import Dict, List, Optional
 
 from tgfs.config import Config
 from tgfs.core import Clients
 from tgfs.core.ops import Ops
 from tgfs.reqres import Document, MessageResp, MessageRespWithDocument
+from tgfs.services.filename_inference import FilenameInferenceService
 from tgfs.telegram.impl.telethon import TelethonAPI
 from telethon.tl.types import PeerChannel
 from telethon.helpers import TotalList
@@ -25,6 +27,7 @@ class AutoImportManager:
         self._running = False
         self._last_message_ids: Dict[str, int] = {}
         self._file_names: Dict[str, Dict[int, str]] = {}
+        self._filename_inference = FilenameInferenceService()
 
     def _resolve_channel_id(self, client_name: str) -> Optional[int]:
         for cid, meta in self._config.tgfs.metadata.items():
@@ -203,18 +206,34 @@ class AutoImportManager:
         if imported_count:
             logger.info(f"[auto-import] Imported {imported_count} messages for {client_name}")
 
-    def _extract_file_name(self, client_name: str, message: MessageRespWithDocument) -> str:
+    async def _extract_file_name(self, client_name: str, message: MessageRespWithDocument) -> str:
         file_name = self._file_names.get(client_name, {}).get(message.message_id)
         if file_name:
             return file_name
-        return f"imported_{message.message_id}"
+
+        # Try LLM inference from caption text when no explicit filename exists
+        if message.text and message.text.strip():
+            inferred = await self._filename_inference.infer(
+                message.text, message.document.mime_type
+            )
+            if inferred:
+                return inferred
+
+        # Derive extension from mime_type when no explicit filename attribute exists
+        ext = ""
+        if message.document.mime_type:
+            guessed = mimetypes.guess_extension(message.document.mime_type)
+            if guessed:
+                ext = guessed
+
+        return f"imported_{message.message_id}{ext}"
 
     async def _import_message(
         self, client_name: str, client, message: MessageRespWithDocument
     ) -> None:
         ops = Ops(client)
 
-        file_name = self._extract_file_name(client_name, message)
+        file_name = await self._extract_file_name(client_name, message)
         file_name = file_name.replace('/', '_').replace('\\', '_')
         target_path = f"/{file_name}"
 
@@ -276,4 +295,5 @@ class AutoImportManager:
                 pass
 
         self._tasks.clear()
+        await self._filename_inference.close()
         logger.info("[auto-import] AutoImportManager stopped")

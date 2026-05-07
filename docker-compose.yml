@@ -14,3 +14,6 @@ services:
     environment:
       - TGFS_DATA_DIR=/home/tgfs/.tgfs
       - TGFS_CONFIG_FILE=config.yaml
+      # Optional: LLM-based filename inference via OpenRouter
+      # - OPENROUTER_API_KEY=your_openrouter_api_key
+      # - OPENROUTER_MODEL=poolside/laguna-m.1:free
