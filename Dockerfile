@@ -38,6 +38,9 @@ COPY tgfs/ ./tgfs/
 COPY asgidav/ ./asgidav/
 COPY main.py ./
 
+# Install extra runtime dependencies not managed by poetry
+RUN pip install --no-cache-dir httpx>=0.28.0
+
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash tgfs
 USER tgfs
