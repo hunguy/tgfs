@@ -81,7 +81,7 @@ class FilenameInferenceService:
                 logger.warning("[filename-inference] OpenRouter returned no choices")
                 return None
 
-            raw = data["choices"][0].get("message", {}).get("content", "").strip()
+            raw = (data["choices"][0].get("message", {}).get("content") or "").strip()
             if not raw:
                 logger.warning("[filename-inference] OpenRouter returned empty content")
                 return None
